@@ -1,0 +1,325 @@
+------------------------------------------------------------------------------------------------------------------------------------------------
+--11
+----
+-- Angajatii si numarul de albume inchiriate, pe zile, ordonate descrescator dupa numarul de albume si crescator dupa data
+select
+    UPPER(CONCAT(ang.nume,CONCAT(' ',ang.prenume))) as "angajat",
+    TRUNC(i.data_inchiriere) as "data_inchiriere",
+    COUNT(DISTINCT alb.pk_album)
+from angajat ang
+inner join inchiriere i on ang.pk_angajat = i.fk_angajat
+inner join album alb on i.fk_album = alb.pk_album
+group by UPPER(CONCAT(ang.nume,CONCAT(' ',ang.prenume))), TRUNC(i.data_inchiriere)
+order by 3 desc, 2 ASC
+
+
+--Albumele inchiriate (impreuna cu artistul albumului si angajatul care a inchiriat albumul), returnate sau in stadiu de inchiriate, care s-au si vandut (se afiseaza data vanzarii) sau nevandute (se afiseaza FARA VANAZARE)
+select
+    alb.nume as "album",
+    art.nume as "artist",
+    vanz."nume_angajat",
+    DECODE(i.date_retur,NULL,'RETURNAT','INCHIRIAT') as "status",
+    NVL(TO_CHAR(vanz.data_vanzare, 'dd-MON-yy'),'FARA VANZARE') as "data_vanzare"
+from album alb
+inner join artist art on alb.fk_artist = art.pk_artist
+inner join inchiriere i on alb.pk_album = i.fk_album
+left join (
+    select 
+        v.pk_vanzare, 
+        a.pk_album, 
+        v.data_vanzare,
+        ang.nume as "nume_angajat"
+    from vanzare v
+    inner join album a on v.fk_album = a.pk_album
+    inner join angajat ang on v.fk_angajat = ang.pk_angajat
+    where UPPER(ang.nume) LIKE '%ESCU'
+) vanz on alb.pk_album = vanz.pk_album
+WHERE to_char(vanz.data_vanzare,'YYYY') = '2021';
+
+
+-- Albumele artistilor din SUA si pretul maxim al unui album cu acelasi artist 
+WITH MaxPretAlbumPeArtist
+AS (
+	SELECT 
+        art.pk_artist, 
+        t.nume as "nume_tara", 
+        art.nume as "nume_artist", 
+        MAX(alb.pret_vanzare) as "Maxim"
+	FROM album alb
+    INNER JOIN artist art on alb.fk_artist = art.pk_artist
+    INNER JOIN tara t on art.fk_tara = t.pk_tara
+	GROUP BY art.pk_artist, t.nume, art.nume
+)
+SELECT DISTINCT 
+    alb.nume as "album",
+    MaxPretAlbumPeArtist."Maxim" || ' LEI' as "pret maxim artist"
+FROM album alb
+INNER JOIN MaxPretAlbumPeArtist ON alb.fk_artist = MaxPretAlbumPeArtist.pk_artist
+WHERE SUBSTR(MaxPretAlbumPeArtist."nume_tara",1,3) = 'SUA'
+ORDER BY alb.nume ASC;
+
+
+-- Daca exista albume mai scumpe de 250 lei si mai noi de anul 1985, se afiseaza albumul, daca nu, toate albumele tip vinyl
+IF ( 250 < ANY ( SELECT alb.pret_vanzare
+					FROM album alb 
+                    WHERE alb.an >= 1985 ) )
+THEN
+      SELECT alb.nume as "album", alb.an, art.nume as "artist", ta.nume "tip_album", alb.pret_vanzare
+	  FROM album alb
+      INNER JOIN artist art on alb.fk_artist = art.pk_artist
+      INNER JOIN tip_album ta on alb.fk_tip_album = ta.pk_tip_album
+	  WHERE alb.an >= 1985 AND alb.pret_vanzare > 250 ;
+ELSE 
+      SELECT alb.nume as "album", alb.an, art.nume as "artist", ta.nume "tip_album", alb.pret_vanzare
+	  FROM album alb
+      INNER JOIN artist art on alb.fk_artist = art.pk_artist
+      INNER JOIN tip_album ta on alb.fk_tip_album = ta.pk_tip_album
+	  WHERE UPPER(ta.nume) LIKE 'VINYL';
+END IF;
+
+
+--Artistii (si originea acestora: SUA, Europa) si numarul de albume vandute pentru cei care au mai mult de 1 album vandut
+select
+    a.nume as "artist",
+    a."origine",
+    count(v.fk_album) as "nr.albume vandute"
+from (
+    select
+        art.pk_artist,
+        art.nume,
+        case to_char(t.nume)
+            when 'SUA' then to_char('SUA')
+            else to_char('Europa') 
+            end as "origine"
+    from artist art
+    inner join tara t on art.fk_tara = t.pk_tara
+) a
+inner join album alb on a.pk_artist = alb.fk_artist
+inner join vanzare v on alb.pk_album = v.fk_album
+group by a.nume, a."origine"
+having count(v.fk_album) > 1
+
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------
+--12
+----
+--•	Actualizare stocuri albume: Adaugare cate 2 bucati din fiecare album care s-a vandut de mai mult de o data
+update album 
+set stoc = stoc + 2 
+where pk_album in (
+    select 
+        a.pk_album
+    from album a
+    inner join vanzare v on a.pk_album = v.fk_album
+    group by a.pk_album
+    having count(v.pk_vanzare) > 1
+);
+
+--•	Actualizare status existent card de fidelitate, pentru angajatii care au cel putin 3 inchirieri de albume: se va actualiza valoarea in 1 (true).
+update client c 
+set are_card_fidelitate = 1 
+where c.pk_client in (
+    select distinct
+        i.fk_client
+    from inchiriere i
+    group by i.fk_client
+    having count(*) >= 3
+);
+
+
+--•	Stergere melodii care nu se afla pe niciun album ( fk_album IS NULL ) sau de pe albume care nu se mai afla in stoc ( stoc = 0 ): stergere asociere melodie_gen + stergere melodii
+delete 
+from melodie_gen
+where fk_melodie in
+(
+    select m.pk_melodie
+    from melodie m
+    left join album alb on m.fk_album = alb.pk_album
+    where m.fk_album is null
+          or alb.stoc = 0
+);
+
+delete
+from melodie 
+where pk_melodie in
+(
+    select m.pk_melodie
+    from melodie m
+    left join album alb on m.fk_album = alb.pk_album
+    where m.fk_album is null
+          or alb.stoc = 0
+);
+
+
+
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------
+--13
+----
+CREATE SEQUENCE sequence_artist
+INCREMENT BY 1
+START WITH 1
+NOMAXVALUE
+MINVALUE 1
+NOCYCLE
+NOCACHE
+ORDER;
+
+CREATE SEQUENCE sequence_tara
+INCREMENT BY 1
+START WITH 1
+MAXVALUE 200
+MINVALUE 1
+NOCYCLE
+NOCACHE
+ORDER;
+
+CREATE SEQUENCE sequence_gen
+INCREMENT BY 1
+START WITH 1
+MAXVALUE 1000
+MINVALUE 1
+NOCYCLE
+NOCACHE
+ORDER;
+
+CREATE SEQUENCE sequence_melodie_gen
+INCREMENT BY 1
+START WITH 1
+NOMAXVALUE
+MINVALUE 1
+NOCYCLE
+NOCACHE
+ORDER;
+
+CREATE SEQUENCE sequence_melodie
+INCREMENT BY 1
+START WITH 1
+NOMAXVALUE
+MINVALUE 1
+NOCYCLE
+NOCACHE
+ORDER;
+
+CREATE SEQUENCE sequence_album
+INCREMENT BY 1
+START WITH 1
+NOMAXVALUE
+MINVALUE 1
+NOCYCLE
+NOCACHE
+ORDER;
+
+CREATE SEQUENCE sequence_casa_discuri
+INCREMENT BY 1
+START WITH 1
+NOMAXVALUE
+MINVALUE 1
+NOCYCLE
+NOCACHE
+ORDER;
+
+CREATE SEQUENCE sequence_angajat
+INCREMENT BY 1
+START WITH 1
+NOMAXVALUE
+MINVALUE 1
+NOCYCLE
+NOCACHE
+ORDER;
+
+CREATE SEQUENCE sequence_client
+INCREMENT BY 1
+START WITH 1
+NOMAXVALUE
+MINVALUE 1
+NOCYCLE
+NOCACHE
+ORDER;
+
+CREATE SEQUENCE sequence_vanzare
+INCREMENT BY 1
+START WITH 1
+NOMAXVALUE
+MINVALUE 1
+NOCYCLE
+NOCACHE
+ORDER;
+
+CREATE SEQUENCE sequence_inchiriere
+INCREMENT BY 1
+START WITH 1
+NOMAXVALUE
+MINVALUE 1
+NOCYCLE
+NOCACHE
+ORDER;
+
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------
+--16
+----
+--Extragerea tuturor albumelor (cu detalii despre casa de discuri si tipurile de album), a clientilor si a inchirierilor (fie ca albumele au fost inchiriate sau nu)
+select 
+    alb.nume,
+    alb.an,
+    cd.nume as "casa_discuri",
+    ta.nume as "tip_album",
+    CONCAT(alb.pret_inchiriere , ' lei'),
+    i.data_inchiriere,
+    i.date_retur,
+    i.discount,
+    i.penalitati,
+    CONCAT(c.nume , c.prenume) as "client",
+    c.are_card_fidelitate
+from album alb
+full outer join casa_discuri cd on alb.fk_casa_discuri = cd.pk_casa_discuri
+full outer join tip_album ta on alb.fk_tip_album = ta.pk_tip_album
+full outer join inchiriere i on alb.pk_album = i.fk_album
+full outer join client c on i.fk_client=c.pk_client
+
+--Extragerea detaliilor despre toate albumele inchiriate, mai putin cele care s-au si vandut intre timp
+select 
+    alb.nume,
+    alb.an,
+    ta.nume as "tip_album",
+    i.data_inchiriere as "data"
+from album alb
+inner join tip_album ta on alb.fk_tip_album = ta.pk_tip_album
+inner join inchiriere i on alb.pk_album = i.fk_album
+MINUS
+select 
+    alb.nume,
+    alb.an,
+    ta.nume as "tip_album",
+    v.data_vanzare as "data"
+from album alb
+inner join tip_album ta on alb.fk_tip_album = ta.pk_tip_album
+inner join vanzare v on alb.pk_album = v.fk_album
+
+--Extragerea detaliilor despre clientii care au inchiriat albume, mai putin cei care au inchiriat acelasi album de mai mult de doua ori 
+select
+    c.nume,
+    c.prenume,
+    c.telefon,
+    LISTAGG(i.data_inchiriere,',') WITHIN GROUP ( ORDER BY c.nume, c.prenume )
+from client c
+inner join inchiriere i on c.pk_client = i.fk_client
+group by c.nume, c.prenume, c.telefon
+MINUS
+select
+    c.nume,
+    c.prenume,
+    c.telefon,
+    LISTAGG(i.data_inchiriere,',') WITHIN GROUP ( ORDER BY c.nume, c.prenume )
+from client c
+inner join inchiriere i on c.pk_client = i.fk_client
+inner join album alb on i.fk_album = alb.pk_album
+group by c.nume, c.prenume, c.telefon
+having count(alb.nume) > 2
+
+
+
